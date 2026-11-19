@@ -11,77 +11,92 @@ permissions:
 
 jobs:
   build:
-    name: Build Linux ARM64 Python 3.12
+    name: Keystone 0.9.2 - Linux ARM64 - Python 3.12
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Verify build environment
+      - name: Verify native ARM64 runner
         run: |
-          uname -m
+          set -eux
+          test "$(uname -m)" = "aarch64"
           lsb_release -a
           python3.12 --version
 
-      - name: Install build dependencies
+      - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            git \
-            pkg-config \
-            python3.12 \
-            python3.12-dev \
+          sudo apt-get install -y \\
+            build-essential \\
+            cmake \\
+            ninja-build \\
+            git \\
+            pkg-config \\
+            python3.12 \\
+            python3.12-dev \\
             python3.12-venv
 
-      - name: Prepare Python environment
+      - name: Create Python build environment
         run: |
           python3.12 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip setuptools wheel
 
-    - name: Build Keystone wheel
+      - name: Build Keystone wheel
         run: |
           mkdir -p wheelhouse
-          .venv/bin/python -m pip wheel \
-            --no-deps \
-            --no-cache-dir \
-            keystone-engine==0.9.2 \
+          .venv/bin/python -m pip wheel \\
+            --no-deps \\
+            --no-cache-dir \\
+            keystone-engine==0.9.2 \\
             --wheel-dir wheelhouse
 
-      - name: Test wheel
+      - name: Retag wheel for Linux ARM64
         run: |
-          .venv/bin/python -m pip install wheelhouse/*.whl
+          set -eux
+          .venv/bin/python -m pip install --upgrade wheel
+          .venv/bin/wheel tags \\
+            --platform-tag=linux_aarch64 \\
+            --remove \\
+            wheelhouse/*.whl
+          ls -lh wheelhouse/
+          test "$(find wheelhouse -maxdepth 1 -name '*-linux_aarch64.whl' | wc -l)" -eq 1
 
-          .venv/bin/python - <<'PY'
+      - name: Install and test built wheel
+        run: |
+          set -eux
+          mkdir -p test-install
+          .venv/bin/python -m pip install \\
+            --no-deps \\
+            --target test-install \\
+            wheelhouse/*-linux_aarch64.whl
+
+          PYTHONPATH=test-install .venv/bin/python - <<'PY'
+          import platform
           import keystone
 
+          assert platform.machine() == "aarch64", platform.machine()
+
+          print("Machine:", platform.machine())
           print("Keystone version:", keystone.__version__)
 
           ks = keystone.Ks(
               keystone.KS_ARCH_ARM64,
               keystone.KS_MODE_LITTLE_ENDIAN
           )
-
           encoding, count = ks.asm("mov x0, x1")
+
+          assert count == 1, count
+          assert bytes(encoding).hex() == "e00301aa", bytes(encoding).hex()
 
           print("ARM64 assembly test: PASS")
           print("Instruction count:", count)
           print("Machine code:", bytes(encoding).hex())
           PY
 
-      - name: Show wheel information
-        run: |
-          ls -lh wheelhouse/
-          unzip -p wheelhouse/*.whl '*.dist-info/WHEEL'
-
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
           name: keystone-engine-0.9.2-linux-arm64-py312
-          path: wheelhouse/*.whl
+          path: wheelhouse/*-linux_aarch64.whl
           if-no-files-found: error
           retention-days: 30
